@@ -7,6 +7,29 @@ KEY_COMMENT="${KEY_COMMENT:-openclaw@$(hostname -f 2>/dev/null || hostname)}"
 PRINT_PRIVATE_KEY="${PRINT_PRIVATE_KEY:-1}"
 SUDOERS_FILE="/etc/sudoers.d/${OPENCLAW_USER}"
 
+install_sudo() {
+  echo "sudo is not installed; attempting to install it."
+
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y sudo
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y sudo
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y sudo
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install sudo
+  elif command -v apk >/dev/null 2>&1; then
+    apk add sudo
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm sudo
+  else
+    echo "Could not find a supported package manager to install sudo." >&2
+    echo "Install sudo manually, then rerun this script." >&2
+    exit 1
+  fi
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this script as root, for example: sudo $0" >&2
   exit 1
@@ -14,6 +37,15 @@ fi
 
 if ! command -v ssh-keygen >/dev/null 2>&1; then
   echo "ssh-keygen is required. Install openssh-client/openssh first." >&2
+  exit 1
+fi
+
+if ! command -v sudo >/dev/null 2>&1; then
+  install_sudo
+fi
+
+if ! command -v visudo >/dev/null 2>&1; then
+  echo "visudo is still not available after installing sudo." >&2
   exit 1
 fi
 
@@ -44,14 +76,10 @@ printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${OPENCLAW_USER}" > "${SUDOERS_FILE}"
 chown root:root "${SUDOERS_FILE}"
 chmod 440 "${SUDOERS_FILE}"
 
-if command -v visudo >/dev/null 2>&1; then
-  if ! visudo -cf "${SUDOERS_FILE}" >/dev/null; then
-    rm -f "${SUDOERS_FILE}"
-    echo "Generated sudoers file failed validation and was removed." >&2
-    exit 1
-  fi
-else
-  echo "visudo not found; wrote ${SUDOERS_FILE} but could not validate it." >&2
+if ! visudo -cf "${SUDOERS_FILE}" >/dev/null; then
+  rm -f "${SUDOERS_FILE}"
+  echo "Generated sudoers file failed validation and was removed." >&2
+  exit 1
 fi
 
 USER_HOME="$(getent passwd "${OPENCLAW_USER}" | cut -d: -f6)"
@@ -63,11 +91,19 @@ install -d -m 700 -o "${OPENCLAW_USER}" -g "${OPENCLAW_USER}" "${SSH_DIR}"
 if [[ -f "${KEY_PATH}" ]]; then
   echo "SSH key already exists at ${KEY_PATH}; leaving it unchanged."
 else
-  sudo -u "${OPENCLAW_USER}" ssh-keygen \
-    -t "${KEY_TYPE}" \
-    -f "${KEY_PATH}" \
-    -C "${KEY_COMMENT}" \
-    -N ""
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "${OPENCLAW_USER}" -- ssh-keygen \
+      -t "${KEY_TYPE}" \
+      -f "${KEY_PATH}" \
+      -C "${KEY_COMMENT}" \
+      -N ""
+  else
+    sudo -u "${OPENCLAW_USER}" ssh-keygen \
+      -t "${KEY_TYPE}" \
+      -f "${KEY_PATH}" \
+      -C "${KEY_COMMENT}" \
+      -N ""
+  fi
   chmod 600 "${KEY_PATH}"
   chmod 644 "${KEY_PATH}.pub"
 fi
